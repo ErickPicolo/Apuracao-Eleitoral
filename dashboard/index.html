@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Painel Eleitoral - Brasil</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>#mapa { height: 100vh; width: 100%; z-index: 1; background-color: #f1f5f9; }</style>
+</head>
+<body class="flex h-screen overflow-hidden font-sans bg-gray-100 relative">
+
+  <header class="absolute top-4 left-88 right-4 z-20 bg-white/90 backdrop-blur shadow-md rounded-lg p-3 flex justify-between items-center px-6">
+    <div>
+      <h2 class="text-[10px] uppercase tracking-wider text-gray-500 font-bold">Total Nacional Apurado</h2>
+      <p id="total-nacional" class="text-base font-black text-gray-800">0 votos</p>
+    </div>
+
+    <div class="flex items-center space-x-6 w-1/2">
+      <div class="w-1/2">
+        <div class="flex justify-between text-xs font-bold mb-1">
+          <span class="text-red-700">Lula (PT)</span>
+          <span id="pct-lula" class="text-red-700">0%</span>
+        </div>
+        <div class="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+          <div id="bar-lula" class="bg-red-600 h-full transition-all duration-500" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <div class="w-1/2">
+        <div class="flex justify-between text-xs font-bold mb-1">
+          <span class="text-blue-800">Flávio Bolsonaro (PL)</span>
+          <span id="pct-flavio" class="text-blue-800">0%</span>
+        </div>
+        <div class="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+          <div id="bar-flavio" class="bg-blue-800 h-full transition-all duration-500" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <aside class="w-80 bg-white p-5 shadow-lg z-30 flex flex-col justify-between h-full">
+    <section>
+      <h1 class="text-xl font-bold text-gray-800 mb-1">Apuração Eleitoral</h1>
+      <p class="text-xs text-gray-500 mb-4">Resultados Oficiais</p>
+
+      <div class="mb-3">
+        <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Buscar Estado</label>
+        <input type="text" id="busca-estado" placeholder="Ex: São Paulo, SP..." class="w-full border rounded p-2 text-sm bg-gray-50 outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+
+      <div class="mb-4">
+        <label class="block text-xs font-semibold text-gray-600 uppercase mb-1">Cargo</label>
+        <select id="cargo" class="w-full border rounded p-2 text-sm outline-none bg-gray-50">
+          <option value="presidente">Presidente</option>
+        </select>
+      </div>
+
+      <fieldset class="border-t pt-3">
+        <legend class="text-xs font-semibold text-gray-600 uppercase">Mais Votado (%)</legend>
+        <ul class="text-xs space-y-2 mt-2">
+          <li class="flex items-center justify-between">
+            <span class="flex items-center"><span class="w-3 h-3 rounded-full bg-red-700 mr-2"></span> Lula (PT)</span>
+            <span class="font-bold text-red-700">Vermelho</span>
+          </li>
+          <li class="flex items-center justify-between">
+            <span class="flex items-center"><span class="w-3 h-3 rounded-full bg-blue-800 mr-2"></span> Flávio Bolsonaro (PL)</span>
+            <span class="font-bold text-blue-800">Azul</span>
+          </li>
+        </ul>
+      </fieldset>
+    </section>
+
+    <section id="detalhes" class="border-t pt-4 bg-gray-50 p-3 rounded">
+      <h2 id="local-nome" class="text-base font-bold text-gray-800">Passe o mouse no mapa</h2>
+      <p id="local-sub" class="text-xs text-gray-500">Selecione um estado</p>
+
+      <div id="placar" class="mt-3 text-sm space-y-2 hidden">
+        <div class="border-b pb-1 text-xs font-semibold text-gray-500 flex justify-between">
+          <span>Total Apurado:</span>
+          <span id="votos-totais" class="text-gray-800">0</span>
+        </div>
+        <div id="lista-candidatos" class="space-y-3 pt-1"></div>
+      </div>
+    </section>
+  </aside>
+
+  <main class="flex-1">
+    <div id="mapa"></div>
+  </main>
+
+  <script>
+    const limitesBrasil = L.latLngBounds(L.latLng(-34.0, -74.0), L.latLng(5.5, -32.0));
+    const mapa = L.map('mapa', { zoomControl: false, maxBounds: limitesBrasil, maxBoundsViscosity: 1.0, minZoom: 4, maxZoom: 7 }).setView([-14.2350, -51.9253], 4.5);
+    L.control.zoom({ position: 'topright' }).addTo(mapa);
+
+    let camadaGeojson, dadosEstados = {};
+
+    function definirCor(liderNome, pct) {
+      if (!liderNome || pct === 0) return '#e5e7eb';
+      const ehLula = liderNome.toLowerCase().includes('lula') || liderNome.toLowerCase().includes('pt');
+      return ehLula ? (pct >= 50 ? '#b91c1c' : '#ef4444') : (pct >= 50 ? '#1e3a8a' : '#3b82f6');
+    }
+
+    function obterDadosUF(p) {
+      return dadosEstados[(p.sigla || p.postal || p.id || "").toUpperCase()] || null;
+    }
+
+    function estiloRegiao(feature) {
+      const dados = obterDadosUF(feature.properties);
+      return { fillColor: definirCor(dados?.lider_nome, dados?.lider_pct || 0), weight: 1, color: '#ffffff', fillOpacity: 0.9 };
+    }
+
+    function destacar(e) {
+      const camada = e.target;
+      camada.setStyle({ weight: 2, color: '#111', fillOpacity: 1 }).bringToFront();
+
+      const dadosGeo = camada.feature.properties;
+      const estadoDados = obterDadosUF(dadosGeo);
+      document.getElementById('local-nome').innerText = dadosGeo.name || dadosGeo.NM_ESTADO || "Estado";
+
+      if (estadoDados && estadoDados.candidatos.length > 0) {
+        document.getElementById('local-sub').innerText = "Votação Apurada";
+        document.getElementById('placar').classList.remove('hidden');
+        document.getElementById('votos-totais').innerText = estadoDados.total.toLocaleString('pt-BR');
+
+        const container = document.getElementById('lista-candidatos');
+        container.innerHTML = estadoDados.candidatos.map((cand, index) => {
+          const ehLula = cand.nome.toLowerCase().includes('lula');
+          return `
+            <div class="space-y-1 border-b pb-2 last:border-0">
+              <div class="flex justify-between font-bold text-xs">
+                <span>${index + 1}º ${cand.nome}</span>
+                <span class="${ehLula ? 'text-red-700' : 'text-blue-800'}">${cand.pct}%</span>
+              </div>
+              <div class="w-full bg-gray-200 h-1.5 rounded-full overflow-hidden">
+                <div class="${ehLula ? 'bg-red-600' : 'bg-blue-800'} h-full transition-all duration-300" style="width: ${cand.pct}%"></div>
+              </div>
+              <div class="flex justify-between text-[10px] text-gray-500">
+                <span>Votos:</span>
+                <span>${cand.votos.toLocaleString('pt-BR')}</span>
+              </div>
+            </div>`;
+        }).join('');
+      } else {
+        document.getElementById('local-sub').innerText = "Sem dados apurados";
+        document.getElementById('placar').classList.add('hidden');
+      }
+    }
+
+    async function atualizarVotos() {
+      try {
+        const [resNacional, resEstados] = await Promise.all([fetch('/nacional'), fetch('/estados')]);
+        const [dadosNacional, listaEstados] = await Promise.all([resNacional.json(), resEstados.json()]);
+
+        document.getElementById('total-nacional').innerText = `${dadosNacional.votos_totais.toLocaleString('pt-BR')} votos`;
+
+        dadosNacional.candidatos.forEach(c => {
+          const isLula = c.nome.toLowerCase().includes('lula');
+          const prefix = isLula ? 'lula' : 'flavio';
+          if (isLula || c.nome.toLowerCase().includes('flavio') || c.nome.toLowerCase().includes('bolsonaro')) {
+            document.getElementById(`pct-${prefix}`).innerText = `${c.pct}%`;
+            document.getElementById(`bar-${prefix}`).style.width = `${c.pct}%`;
+          }
+        });
+
+        listaEstados.forEach(item => dadosEstados[item.uf.toUpperCase()] = item);
+        if (camadaGeojson) camadaGeojson.setStyle(estiloRegiao);
+      } catch (e) { console.error(e); }
+    }
+
+    async function carregarDashboard() {
+      await atualizarVotos();
+      const resGeo = await fetch('https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson');
+      const dadosGeoJson = await resGeo.json();
+
+      camadaGeojson = L.geoJson(dadosGeoJson, {
+        style: estiloRegiao,
+        onEachFeature: (feature, layer) => layer.on({ mouseover: destacar, mouseout: (e) => camadaGeojson.resetStyle(e.target) })
+      }).addTo(mapa);
+    }
+
+    document.getElementById('busca-estado').addEventListener('input', (e) => {
+      const busca = e.target.value.toLowerCase().trim();
+      if (!busca || !camadaGeojson) return;
+      camadaGeojson.eachLayer((layer) => {
+        const props = layer.feature.properties;
+        const nome = (props.name || props.NM_ESTADO || "").toLowerCase();
+        const sigla = (props.sigla || props.postal || props.id || "").toLowerCase();
+        if (nome.includes(busca) || sigla === busca) {
+          mapa.flyToBounds(layer.getBounds(), { maxZoom: 6, duration: 0.8 });
+          layer.fire('mouseover');
+        }
+      });
+    });
+
+    carregarDashboard();
+    setInterval(atualizarVotos, 15000);
+  </script>
+</body>
+</html>
